@@ -1,0 +1,17 @@
+{
+  "name": "ai-shop-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "axios": "^1.6.8",
+    "canvas": "^3.2.3",
+    "express": "^4.19.2",
+    "googleapis": "^134.0.0",
+    "node-cron": "^3.0.3",
+    "openai": "^7.5.0"
+  }
+}

@@ -4,24 +4,19 @@ const fs = require('fs');
 const path = require('path');
 const { google } = require('googleapis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const OpenAI = require('openai');
 const cron = require('node-cron');
 const { createCanvas, loadImage, registerFont } = require('canvas');
 
 const app = express();
 app.use(express.json());
 
-// -------------------------------------------------------------
-// ၁။ မြန်မာ Font Register လုပ်ခြင်း
-// -------------------------------------------------------------
 function setupMyanmarFont() {
     try {
         const fontPath = path.join(__dirname, 'fonts', 'Pyidaungsu.ttf');
-
         if (fs.existsSync(fontPath)) {
             registerFont(fontPath, { family: 'Pyidaungsu' });
             console.log('Pyidaungsu font registered successfully!');
-        } else {
-            console.warn('Warning: fonts/Pyidaungsu.ttf file not found. Canvas image may fallback to default font.');
         }
     } catch (e) {
         console.error('Font Setup Error:', e.message);
@@ -29,18 +24,18 @@ function setupMyanmarFont() {
 }
 setupMyanmarFont();
 
-// Environment Variables
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'a-p-t-123';
 const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-
 const TELEGRAM_DATA_GROUP_ID = process.env.TELEGRAM_DATA_GROUP_ID;
 const TELEGRAM_PACKING_GROUP_ID = process.env.TELEGRAM_PACKING_GROUP_ID;
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY || '');
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY || '' });
 
 const userSessions = {};
 const pendingPayments = {};
@@ -66,9 +61,25 @@ function getGoogleSheetsAuth() {
     });
 }
 
-// -------------------------------------------------------------
-// ၂။ Google Sheets Helper Functions
-// -------------------------------------------------------------
+async function convertAudioToText(audioUrl) {
+    const tempFilePath = path.join(__dirname, `temp_${Date.now()}.m4a`);
+    try {
+        const response = await axios.get(audioUrl, { responseType: 'arraybuffer' });
+        fs.writeFileSync(tempFilePath, Buffer.from(response.data));
+
+        const transcription = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(tempFilePath),
+            model: 'whisper-1',
+            language: 'my',
+        });
+
+        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+        return transcription.text;
+    } catch (error) {
+        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+        return null;
+    }
+}
 
 async function getPaymentAccountsFromSheet() {
     try {
@@ -121,14 +132,18 @@ async function getProductsFromSheet() {
         const sheets = google.sheets({ version: 'v4', auth });
         const response = await sheets.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
-            range: 'Products!A2:C200',
+            range: 'Products!A2:D200',
         });
         const rows = response.data.values;
         if (!rows || rows.length === 0) return 'လက်ရှိတွင် ကုန်ပစ္စည်း စာရင်းမရှိသေးပါ။';
 
         let productListText = '';
         rows.forEach((row) => {
-            productListText += `- ပစ္စည်း: ${row[0] || 'N/A'} | ဈေး: ${row[1] || 'N/A'} ကျပ် | လက်ကျန်: ${row[2] || '0'}\n`;
+            const name = row[0] || 'N/A';
+            const price = row[1] || 'N/A';
+            const stock = row[2] || '0';
+            const imageUrl = row[3] || 'No Image';
+            productListText += `- ပစ္စည်း: ${name} | ဈေး: ${price} ကျပ် | လက်ကျန်: ${stock} | ပုံလင့်ခ်: ${imageUrl}\n`;
         });
         return productListText;
     } catch (error) {
@@ -221,9 +236,6 @@ async function updateStockInSheet(itemOrderedName, quantityOrdered = 1) {
     }
 }
 
-// -------------------------------------------------------------
-// ၃။ Dynamic Voucher Image Generation
-// -------------------------------------------------------------
 async function createVoucherBuffer(customerName, orderDetails) {
     const config = await getShopConfigFromSheet();
     const canvas = createCanvas(650, 850);
@@ -263,7 +275,10 @@ async function createVoucherBuffer(customerName, orderDetails) {
     const cPhone = getVal('ဖုန်း');
     const cAddress = getVal('လိပ်စာ');
     const cItem = getVal('မှာယူသည့်ပစ္စည်း');
-    const cQty = getVal('အရေအတွက်');
+    const cQty = parseInt(getVal('အရေအတွက်') || '1', 10);
+    const cPrice = parseInt(getVal('ပစ္စည်းဈေးနှုန်း') || '0', 10);
+    const cDeli = parseInt(getVal('ပို့ခ') || '0', 10);
+    const cTotal = parseInt(getVal('စုစုပေါင်း') || '0', 10) || (cPrice * cQty + cDeli);
     const cPayment = getVal('ငွေချေစနစ်');
 
     ctx.fillStyle = '#F1F5F9';
@@ -273,7 +288,7 @@ async function createVoucherBuffer(customerName, orderDetails) {
     ctx.font = 'bold 15px "Pyidaungsu"';
     ctx.fillText(`ဝယ်သူအမည်: ${customerName}`, 45, 210);
     ctx.fillText(`ဖုန်းနံပါတ်: ${cPhone}`, 45, 240);
-    ctx.fillText(`လိပ်စာ/မြို့နယ်: ${cAddress}`, 320, 210);
+    ctx.fillText(`လိပ်စာ/ကားဂိတ်: ${cAddress}`, 320, 210);
     ctx.fillText(`ငွေချေစနစ်: ${cPayment}`, 320, 240);
 
     ctx.fillStyle = '#334155';
@@ -282,30 +297,45 @@ async function createVoucherBuffer(customerName, orderDetails) {
     ctx.fillStyle = '#FFFFFF';
     ctx.font = 'bold 15px "Pyidaungsu"';
     ctx.fillText('စဉ်', 45, 315);
-    ctx.fillText('ပစ္စည်းအမည်', 100, 315);
-    ctx.fillText('အရေအတွက်', 380, 315);
-    ctx.fillText('ငွေချေမှု', 510, 315);
+    ctx.fillText('ပစ္စည်းအမည်', 90, 315);
+    ctx.fillText('အရေအတွက်', 300, 315);
+    ctx.fillText('တစ်ခုဈေး', 410, 315);
+    ctx.fillText('ကျသင့်ငွေ', 520, 315);
 
     ctx.fillStyle = '#F8FAFC';
     ctx.fillRect(30, 330, 590, 50);
-
     ctx.strokeStyle = '#E2E8F0';
     ctx.lineWidth = 1;
     ctx.strokeRect(30, 330, 590, 50);
 
     ctx.fillStyle = '#0F172A';
-    ctx.font = '15px "Pyidaungsu"';
+    ctx.font = '14px "Pyidaungsu"';
     ctx.fillText('၁', 50, 360);
-    ctx.fillText(cItem, 100, 360);
-    ctx.fillText(`${cQty} ခု/ထုပ်`, 410, 360);
-    ctx.fillText(cPayment, 510, 360);
+    ctx.fillText(cItem, 90, 360);
+    ctx.fillText(`${cQty}`, 330, 360);
+    ctx.fillText(`${cPrice.toLocaleString()} ကျပ်`, 410, 360);
+    ctx.fillText(`${(cPrice * cQty).toLocaleString()} ကျပ်`, 520, 360);
+
+    let startY = 400;
+
+    ctx.fillStyle = '#475569';
+    ctx.font = '15px "Pyidaungsu"';
+    ctx.fillText('ပို့ဆောင်ခ (Deli Fee):', 360, startY + 25);
+    ctx.fillText(`${cDeli.toLocaleString()} ကျပ်`, 520, startY + 25);
+
+    ctx.fillStyle = '#1E3A8A';
+    ctx.fillRect(350, startY + 45, 270, 45);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 16px "Pyidaungsu"';
+    ctx.fillText('စုစုပေါင်း ကျသင့်ငွေ:', 365, startY + 73);
+    ctx.fillText(`${cTotal.toLocaleString()} ကျပ်`, 515, startY + 73);
 
     ctx.fillStyle = '#10B981';
-    ctx.fillRect(30, 420, 590, 50);
+    ctx.fillRect(30, startY + 120, 590, 50);
 
     ctx.fillStyle = '#FFFFFF';
     ctx.font = 'bold 18px "Pyidaungsu"';
-    ctx.fillText('အခြေအနေ: အော်ဒါထုတ်ပိုးပြင်ဆင်ပြီးပါပြီ ✅', 160, 452);
+    ctx.fillText('အခြေအနေ: အော်ဒါထုတ်ပိုးပြင်ဆင်ပြီးပါပြီ ✅', 160, startY + 152);
 
     ctx.fillStyle = '#64748B';
     ctx.font = '14px "Pyidaungsu"';
@@ -314,15 +344,9 @@ async function createVoucherBuffer(customerName, orderDetails) {
     return canvas.toBuffer('image/png');
 }
 
-// -------------------------------------------------------------
-// ၄။ Telegram Notifications
-// -------------------------------------------------------------
 async function sendTelegramOrderNotification(orderText, senderPsid) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_PACKING_GROUP_ID) {
-        console.error('Error: TELEGRAM_BOT_TOKEN or TELEGRAM_PACKING_GROUP_ID is missing!');
-        return;
-    }
-    const messageText = `📦 *[ ထုတ်ပိုးရန် အော်ဒါ - Packing List ]*\n━━━━━━━━━━━━━━━━━━\n🆔 *PSID:* \`${senderPsid}\`\n${orderText}\n━━━━━━━━━━━━━━━━━━\n🔴 *အခြေအနေ:* Packing မထုပ်ရသေးပါ`;
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_PACKING_GROUP_ID) return;
+    const messageText = `📦 *[ ထုတ်ပိုးရန် အော်ဒါ - Packing List ]*\n━━━━━━━━━━━━━━━━━━\n🆔 *PSID:* \`${senderPsid}\`\n\n${orderText}\n━━━━━━━━━━━━━━━━━━\n🔴 *အခြေအနေ:* Packing မထုပ်ရသေးပါ`;
     try {
         await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
             chat_id: TELEGRAM_PACKING_GROUP_ID,
@@ -332,18 +356,12 @@ async function sendTelegramOrderNotification(orderText, senderPsid) {
                 inline_keyboard: [[{ text: "✅ Packing Done & Confirm", callback_data: `confirm_pack:${senderPsid}` }]]
             }
         });
-        console.log('Successfully sent message to Telegram Packing Group');
-    } catch (error) {
-        console.error('Send Telegram Packing Error:', error.response ? error.response.data : error.message);
-    }
+    } catch (error) {}
 }
 
 async function sendPaymentCheckToDataGroup(fbName, senderPsid, photoUrl, orderDetails) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_DATA_GROUP_ID) {
-        console.error('Error: TELEGRAM_BOT_TOKEN or TELEGRAM_DATA_GROUP_ID is missing!');
-        return;
-    }
-    const captionText = `💰 *[ ငွေလွှဲ SCREENSHOT စစ်ဆေးရန် ]*\n━━━━━━━━━━━━━━━━━━\n👤 *Customer:* ${fbName}\n🆔 *PSID:* \`${senderPsid}\`\n📦 *အသေးစိတ်:*\n${orderDetails}\n\n🔴 *အခြေအနေ:* မစစ်ရသေးပါ`;
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_DATA_GROUP_ID) return;
+    const captionText = `💰 *[ ငွေလွှဲ SCREENSHOT စစ်ဆေးရန် ]*\n━━━━━━━━━━━━━━━━━━\n👤 *Customer:* ${fbName}\n🆔 *PSID:* \`${senderPsid}\`\n\n📦 *အသေးစိတ်:*\n${orderDetails}\n\n🔴 *အခြေအနေ:* မစစ်ရသေးပါ`;
     try {
         await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
             chat_id: TELEGRAM_DATA_GROUP_ID,
@@ -357,15 +375,9 @@ async function sendPaymentCheckToDataGroup(fbName, senderPsid, photoUrl, orderDe
                 ]]
             }
         });
-        console.log('Successfully sent photo to Telegram Data Group');
-    } catch (error) {
-        console.error('Send Telegram Data Group Error:', error.response ? error.response.data : error.message);
-    }
+    } catch (error) {}
 }
 
-// -------------------------------------------------------------
-// ၅။ Telegram Webhook Handling
-// -------------------------------------------------------------
 app.post('/telegram-webhook', async (req, res) => {
     res.sendStatus(200);
     try {
@@ -380,21 +392,47 @@ app.post('/telegram-webhook', async (req, res) => {
 
             if (data.startsWith('pay_confirm:')) {
                 const senderPsid = data.split(':')[1];
-                let updatedCaption = (callback.message.caption || '').replace('🔴 အခြေအနေ: မစစ်ရသေးပါ', `🟢 *အခြေအနေ:* ငွေဝင်ကြောင်း အတည်ပြုပြီး (${staffName})`);
+                const originalCaption = callback.message.caption || '';
+
+                let extractedOrderText = '';
+                if (originalCaption.includes('📦 *အသေးစိတ်:*') || originalCaption.includes('📦 အသေးစိတ်:')) {
+                    const splitArray = originalCaption.split(/📦 \*?အသေးစိတ်:\*?/);
+                    if (splitArray.length > 1) {
+                        extractedOrderText = splitArray[1].split('🔴 *အခြေအနေ:*')[0].split('🔴 အခြေအနေ:')[0].trim();
+                    }
+                }
+                
+                if (!extractedOrderText && pendingPayments[senderPsid]) {
+                    extractedOrderText = pendingPayments[senderPsid].text;
+                }
+
+                let updatedCaption = originalCaption.replace('🔴 *အခြေအနေ:* မစစ်ရသေးပါ', `🟢 *အခြေအနေ:* ငွေဝင်ကြောင်း အတည်ပြုပြီး (${staffName})`)
+                                                   .replace('🔴 အခြေအနေ: မစစ်ရသေးပါ', `🟢 *အခြေအနေ:* ငွေဝင်ကြောင်း အတည်ပြုပြီး (${staffName})`);
+
                 await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/editMessageCaption`, {
-                    chat_id: chatId, message_id: messageId, caption: updatedCaption, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [] }
+                    chat_id: chatId,
+                    message_id: messageId,
+                    caption: updatedCaption,
+                    parse_mode: 'Markdown',
+                    reply_markup: { inline_keyboard: [] }
                 });
 
-                if (pendingPayments[senderPsid]) {
-                    const orderData = pendingPayments[senderPsid];
-                    await sendTelegramOrderNotification(orderData.text, senderPsid);
+                if (extractedOrderText) {
+                    await sendTelegramOrderNotification(extractedOrderText, senderPsid);
                 }
             } 
             else if (data.startsWith('pay_reject:')) {
                 const senderPsid = data.split(':')[1];
-                let updatedCaption = (callback.message.caption || '').replace('🔴 အခြေအနေ: မစစ်ရသေးပါ', `🔴 *အခြေအနေ:* ငွေလွှဲမဝင်သေးပါ (${staffName})`);
+                let updatedCaption = (callback.message.caption || '')
+                    .replace('🔴 *အခြေအနေ:* မစစ်ရသေးပါ', `🔴 *အခြေအနေ:* ငွေလွှဲမဝင်သေးပါ (${staffName})`)
+                    .replace('🔴 အခြေအနေ: မစစ်ရသေးပါ', `🔴 *အခြေအနေ:* ငွေလွှဲမဝင်သေးပါ (${staffName})`);
+
                 await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/editMessageCaption`, {
-                    chat_id: chatId, message_id: messageId, caption: updatedCaption, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [] }
+                    chat_id: chatId, 
+                    message_id: messageId, 
+                    caption: updatedCaption, 
+                    parse_mode: 'Markdown', 
+                    reply_markup: { inline_keyboard: [] }
                 });
 
                 const customerName = await getFacebookUserName(senderPsid);
@@ -402,26 +440,49 @@ app.post('/telegram-webhook', async (req, res) => {
             }
             else if (data.startsWith('confirm_pack:')) {
                 const senderPsid = data.split(':')[1];
-                let updatedText = (callback.message.text || '').replace('🔴 အခြေအနေ: Packing မထုပ်ရသေးပါ', `🟢 *အခြေအနေ:* Packing ထုပ်ပြီးပါပြီ (${staffName})`);
+                const originalText = callback.message.text || '';
+
+                let orderText = '';
+                if (originalText.includes('🆔 *PSID:*') || originalText.includes('🆔 PSID:')) {
+                    const lines = originalText.split('\n');
+                    orderText = lines.slice(3).join('\n').replace(/🔴 \*?အခြေအနေ:\*?.*/g, '').trim();
+                }
+
+                let updatedText = originalText.replace('🔴 *အခြေအနေ:* Packing မထုပ်ရသေးပါ', `🟢 *အခြေအနေ:* Packing ထုပ်ပြီးပါပြီ (${staffName})`)
+                                              .replace('🔴 အခြေအနေ: Packing မထုပ်ရသေးပါ', `🟢 *အခြေအနေ:* Packing ထုပ်ပြီးပါပြီ (${staffName})`);
+
                 await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/editMessageText`, {
-                    chat_id: chatId, message_id: messageId, text: updatedText, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [] }
+                    chat_id: chatId, 
+                    message_id: messageId, 
+                    text: updatedText, 
+                    parse_mode: 'Markdown', 
+                    reply_markup: { inline_keyboard: [] }
                 });
 
                 const customerName = await getFacebookUserName(senderPsid);
-                const orderData = pendingPayments[senderPsid];
+                const finalOrderDetails = (pendingPayments[senderPsid] && pendingPayments[senderPsid].text) ? pendingPayments[senderPsid].text : orderText;
 
-                if (orderData) {
-                    await saveOrderToSheet(senderPsid, customerName, orderData.text, orderData.days);
-                    const itemMatch = orderData.text.match(/မှာယူသည့်ပစ္စည်း:\s*(.+)/);
-                    const qtyMatch = orderData.text.match(/အရေအတွက်:\s*(\d+)/);
+                if (finalOrderDetails) {
+                    await saveOrderToSheet(senderPsid, customerName, finalOrderDetails, 3);
+                    
+                    const itemMatch = finalOrderDetails.match(/မှာယူသည့်ပစ္စည်း:\s*(.+)/);
+                    const qtyMatch = finalOrderDetails.match(/အရေအတွက်:\s*(\d+)/);
                     if (itemMatch && itemMatch[1]) {
                         await updateStockInSheet(itemMatch[1].trim(), qtyMatch ? parseInt(qtyMatch[1], 10) : 1);
                     }
 
-                    const voucherBuffer = await createVoucherBuffer(customerName, orderData.text);
-                    await sendFBPhotoBuffer(senderPsid, voucherBuffer, `မင်္ဂလာပါ ${customerName} ရှင့်၊ လူကြီးမင်း၏ အော်ဒါအား ထုတ်ပိုးပြင်ဆင်ပြီးစီးပါပြီဖြစ်၍ ဘောင်ချာ ပို့ပေးလိုက်ပါတယ်ရှင့်။ 📦✨`);
+                    const voucherBuffer = await createVoucherBuffer(customerName, finalOrderDetails);
 
-                    delete pendingPayments[senderPsid];
+                    if (finalOrderDetails.includes('ငွေချေစနစ်: COD')) {
+                        await sendFBPhotoBuffer(senderPsid, voucherBuffer, `မင်္ဂလာပါ ${customerName} ရှင့်၊ လူကြီးမင်း၏ အော်ဒါအား ထုတ်ပိုးပြင်ဆင်ပြီးစီးပါပြီဖြစ်၍ ဘောင်ချာ ပို့ပေးလိုက်ပါတယ်ရှင့်။ 📦✨`);
+                        delete pendingPayments[senderPsid];
+                    } else {
+                        pendingPayments[senderPsid] = {
+                            ...pendingPayments[senderPsid],
+                            voucherBuffer: voucherBuffer
+                        };
+                        await sendFBMessage(senderPsid, `မင်္ဂလာပါ ${customerName} ရှင့်၊ လူကြီးမင်း၏ အော်ဒါအား ထုတ်ပိုးပြင်ဆင်ပြီးပါပြီ။ ကားဂိတ်သို့ ပို့ဆောင်ပြီးပါက ဂိတ်ဘောင်ချာနှင့်အတူ တစ်ပေါင်းတည်း ပို့ပေးပါမည်။ 📦✨`);
+                    }
                 }
             }
         }
@@ -440,23 +501,24 @@ app.post('/telegram-webhook', async (req, res) => {
                 const gateVoucherUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
 
                 const imageBufferResponse = await axios.get(gateVoucherUrl, { responseType: 'arraybuffer' });
-                const imageBuffer = Buffer.from(imageBufferResponse.data, 'binary');
+                const gateVoucherBuffer = Buffer.from(imageBufferResponse.data, 'binary');
 
                 const customerName = await getFacebookUserName(senderPsid);
-                const captionText = `မင်္ဂလာပါ ${customerName} ရှင့်၊ လူကြီးမင်း အော်ဒါအား ကားဂိတ်/အိမ်ရောက် ပို့ဆောင်ရေးသို့ လွှဲပြောင်းပေးလိုက်ပါပြီ။ ပို့ဆောင်ရေး ဘောင်ချာပုံအား ပူးတွဲ ပို့ပေးလိုက်ပါတယ်ရှင့်။ 🚌ကျေးဇူးအထူးတင်ရှိပါသည်။`;
 
-                await sendFBPhotoBuffer(senderPsid, imageBuffer, captionText);
+                if (pendingPayments[senderPsid] && pendingPayments[senderPsid].voucherBuffer) {
+                    await sendFBPhotoBuffer(senderPsid, pendingPayments[senderPsid].voucherBuffer, `မင်္ဂလာပါ ${customerName} ရှင့်၊ လူကြီးမင်း၏ ပစ္စည်းဘောင်ချာ နှင့် ကားဂိတ်ဘောင်ချာ ရရှိပြီဖြစ်၍ နှစ်ပုံလုံး ပူးတွဲ ပို့ပေးလိုက်ပါတယ်ရှင့်။ 🚌✨`);
+                    await sendFBPhotoBuffer(senderPsid, gateVoucherBuffer, `ကားဂိတ် ပို့ဆောင်ရေး ဘောင်ချာပုံ ဖြစ်ပါတယ်ရှင့်။ ဝယ်ယူအားပေးမှုကို အထူးကျေးဇူးတင်ရှိပါသည်။`);
+                    delete pendingPayments[senderPsid];
+                } else {
+                    const captionText = `မင်္ဂလာပါ ${customerName} ရှင့်၊ လူကြီးမင်း အော်ဒါအား ကားဂိတ်/အိမ်ရောက် ပို့ဆောင်ရေးသို့ လွှဲပြောင်းပေးလိုက်ပါပြီ။ ပို့ဆောင်ရေး ဘောင်ချာပုံအား ပူးတွဲ ပို့ပေးလိုက်ပါတယ်ရှင့်။ 🚌 ကျေးဇူးအထူးတင်ရှိပါသည်။`;
+                    await sendFBPhotoBuffer(senderPsid, gateVoucherBuffer, captionText);
+                }
             }
         }
 
-    } catch (error) {
-        console.error('Telegram Webhook Handling Error:', error.message);
-    }
+    } catch (error) {}
 });
 
-// -------------------------------------------------------------
-// ၆။ Gemini AI Chat Session
-// -------------------------------------------------------------
 async function getChatSession(senderPsid, customerName) {
     if (!userSessions[senderPsid]) {
         const productData = await getProductsFromSheet();
@@ -467,7 +529,7 @@ async function getChatSession(senderPsid, customerName) {
 သင့်နာမည်သည် အရောင်းဝန်ထမ်း AI ဖြစ်သည်။
 Customer နာမည်: "${customerName}"
 
-[ပစ္စည်းစာရင်းနှင့် လက်ကျန်]
+[ပစ္စည်းစာရင်း၊ လက်ကျန် နှင့် ပုံလင့်ခ်]
 ${productData}
 
 [COD ရရှိနိုင်သော မြို့နယ်များနှင့် ပို့ခ]
@@ -478,18 +540,29 @@ ${paymentData}
 
 **အရောင်းဆိုင် စည်းမျဉ်းများ:**
 ၁။ Customer မေးသည့် ပစ္စည်းအကြောင်း၊ ဈေးနှုန်းနှင့် လက်ကျန်ကိုပဲ အရင်ဖြေပါ။
-၂။ Customer က "မှာယူမည်/ယူမယ်/ဝယ်မယ်" ဟု တိကျစွာပြောမှသာ မြို့နယ်၊ ဖုန်းနံပါတ် နှင့် လိပ်စာကို တောင်းပါ။
-၃။ **COD စစ်ဆေးရန်နှင့် ငွေတောင်းရန် စည်းမျဉ်း:**
-   - [COD ရရှိနိုင်သော မြို့နယ်များ] ထဲတွင် ပါဝင်ပါက -> COD ရကြောင်း၊ ပို့ခ အပါအဝင် ကျသင့်ငွေကို ပြောပြပေးပါ။
-   - **[COD မရသော မြို့နယ်များ] ဖြစ်ပါက:** -> COD မရပါဟု တိကျစွာပြောပါ။ ထို့နောက် [ငွေလွှဲရမည့် အကောင့်များ] စာရင်းကို အပြည့်အစုံ ပြသပေးပြီး **ငွေလွှဲပြီးပါက ငွေလွှဲပြေစာ Screenshot (SS) ပို့ပေးရန် တောင်းဆိုပါ။**
+၂။ Customer က ပစ္စည်းပုံ ပြခိုင်းပါက သို့မဟုတ် ပစ္စည်းအကြောင်း မေးမြန်းပါက အဆိုပါ ပစ္စည်း၏ [ပုံလင့်ခ်] ကို တိကျစွာ ရယူပြီး စာကြောင်း၏ နောက်ဆုံးတွင် အောက်ပါ Tag ဖြင့် ထည့်ပေးပါ (ပုံလင့်ခ် မရှိပါက သို့မဟုတ် "No Image" ဖြစ်ပါက Tag ထည့်ရန် မလိုပါ) -
+[IMAGE: (ပုံလင့်ခ် URL)]
 
-၄။ အော်ဒါအချက်အလက်များ အပြည့်အစုံ ရရှိပါက စာကြောင်း၏ နောက်ဆုံးတွင် အောက်ပါ Tag တိကျစွာ ထည့်ပေးပါ (စာလုံးပေါင်း မမှားပါစေနှင့်):
+၃။ Customer က "မှာယူမည်/ယူမယ်/ဝယ်မယ်" ဟု တိကျစွာပြောမှသာ မြို့နယ်၊ ဖုန်းနံပါတ် နှင့် လိပ်စာကို တောင်းပါ။
+
+၄။ **COD စစ်ဆေးရန်နှင့် ငွေတောင်းရန် စည်းမျဉ်း:**
+   - **[COD ရရှိနိုင်သော မြို့နယ်များ] ထဲတွင် ပါဝင်ပါက:**
+     -> COD ရကြောင်း ပြောပါ။ ပစ္စည်းကျသင့်ငွေ + Deli ပို့ခ ပေါင်းပြီး စုစုပေါင်း ကျသင့်ငွေကို တွက်ချက်ပြောပြပေးပါ။ ငွေကြိုလွှဲရန် မလိုဘဲ အော်ဒါအတည်ပြုပေးပါ။
+   - **[COD မရသော မြို့နယ်များ] ဖြစ်ပါက (မဖြစ်မနေ လုပ်ဆောင်ရမည့် စည်းမျဉ်း):**
+     -> COD မရပါဟု တိကျစွာပြောပါ။ 
+     -> **"မည်သည့် ကားဂိတ်သို့ တင်ပေးရမည်နည်း"** ဟု မဖြစ်မနေ မေးရပါမည်။
+     -> ဝယ်သူက အဆင်ပြေသည့် ကားဂိတ်အမည် ပြောပြလာမှသာ [ငွေလွှဲရမည့် အကောင့်များ] စာရင်းကို ပြသပေးပြီး **ငွေလွှဲပြီးပါက ငွေလွှဲပြေစာ Screenshot (SS) ပို့ပေးရန် တောင်းဆိုပါ။**
+
+၅။ အော်ဒါအချက်အလက်များ အပြည့်အစုံ ရရှိပါက စာကြောင်း၏ နောက်ဆုံးတွင် အောက်ပါ Tag တိကျစွာ ထည့်ပေးပါ:
 [ORDER_INFO]
 အမည်: ${customerName}
 ဖုန်း: (ဖုန်းနံပါတ်)
-လိပ်စာ: (မြို့နယ်/ကားဂိတ်အမည်)
+လိပ်စာ: (မြို့နယ် နှင့် ကားဂိတ်အမည်)
 မှာယူသည့်ပစ္စည်း: (ပစ္စည်းအမည်)
-အရေအတွက်: (အရေအတွက်)
+အရေအတွက်: (အရေအတွက် ဂဏန်းတစ်ခုတည်း)
+ပစ္စည်းဈေးနှုန်း: (တစ်ခု ဈေးနှုန်း ဂဏန်းတစ်ခုတည်း)
+ပို့ခ: (ပို့ဆောင်ခ ဂဏန်းတစ်ခုတည်း၊ COD မရပါက 0 ဟုထည့်ရန်)
+စုစုပေါင်း: (စုစုပေါင်း ကျသင့်ငွေ ဂဏန်းတစ်ခုတည်း)
 ငွေချေစနစ်: (COD သို့မဟုတ် PREPAID)
 ကြာချိန်ရက်: (3)
 [/ORDER_INFO]`;
@@ -515,7 +588,17 @@ async function generateAIResponse(senderPsid, userMessage, customerName) {
     try {
         const chatSession = await getChatSession(senderPsid, customerName);
         const result = await chatSession.sendMessage(userMessage);
-        const aiReply = result.response.text();
+        let aiReply = result.response.text();
+
+        let extractedImageUrl = null;
+
+        if (aiReply.includes('[IMAGE:')) {
+            const imgMatch = aiReply.match(/\[IMAGE:\s*(https?:\/\/[^\s\]]+)\]/);
+            if (imgMatch && imgMatch[1]) {
+                extractedImageUrl = imgMatch[1];
+            }
+            aiReply = aiReply.replace(/\[IMAGE:[\s\S]*?\]/, '').trim();
+        }
 
         if (aiReply.includes('[ORDER_INFO]')) {
             const orderDetails = aiReply.split('[ORDER_INFO]')[1].split('[/ORDER_INFO]')[0].trim();
@@ -524,27 +607,20 @@ async function generateAIResponse(senderPsid, userMessage, customerName) {
 
             pendingPayments[senderPsid] = { text: orderDetails, days: estDays };
 
-            // COD အော်ဒါဖြစ်ပါက Packing Group သို့ တိုက်ရိုက် ပို့ပေးမည်
             if (orderDetails.includes('ငွေချေစနစ်: COD')) {
                 await sendTelegramOrderNotification(orderDetails, senderPsid);
             }
 
             const cleanReply = aiReply.replace(/\[ORDER_INFO\][\s\S]*?\[\/ORDER_INFO\]/, '').trim();
-            return cleanReply;
+            return { text: cleanReply, imageUrl: extractedImageUrl };
         }
 
-        return aiReply;
+        return { text: aiReply, imageUrl: extractedImageUrl };
     } catch (error) {
-        if (error.message && error.message.includes('429')) {
-            return 'ခါတိုင်းထက် စာပြန်တာ ပိုများနေ၍ ခဏနားနေပါသည်ရှင်။ ၁ မိနစ်ခန့်အကြာမှ ပြန်လည် စာပို့ပေးပါရန် မေတ္တာရပ်ခံအပ်ပါသည်။';
-        }
-        return 'မင်္ဂလာပါရှင်၊ ခဏစောင့်ဆိုင်းပေးပါရန် မေတ္တာရပ်ခံအပ်ပါသည်။';
+        return { text: 'မင်္ဂလာပါရှင်၊ ခဏစောင့်ဆိုင်းပေးပါရန် မေတ္တာရပ်ခံအပ်ပါသည်။', imageUrl: null };
     }
 }
 
-// -------------------------------------------------------------
-// ၇။ Facebook Webhook Handling
-// -------------------------------------------------------------
 app.post('/facebook-webhook', async (req, res) => {
     const body = req.body;
     if (body.object === 'page') {
@@ -553,7 +629,6 @@ app.post('/facebook-webhook', async (req, res) => {
             if (!entry.messaging || entry.messaging.length === 0) continue;
             const webhook_event = entry.messaging[0];
             const senderPsid = webhook_event.sender ? webhook_event.sender.id : null;
-
             if (!senderPsid) continue;
             if (webhook_event.message && (webhook_event.message.is_echo || webhook_event.message.app_id)) continue;
 
@@ -566,10 +641,25 @@ app.post('/facebook-webhook', async (req, res) => {
                 
                 await sendPaymentCheckToDataGroup(customerName, senderPsid, photoUrl, orderDetails);
                 await sendFBMessage(senderPsid, `မင်္ဂလာပါ ${customerName} ရှင့်၊ ပေးပို့လာသော ငွေလွှဲပြေစာအား လက်ခံရရှိပါပြီရှင်။ Admin မှ စစ်ဆေးပြီးပါက Packing အထုပ်ထုပ်ရန် အကြောင်းကြားပေးပါမည်။`);
-            } else if (webhook_event.message?.text) {
+            } 
+            else if (webhook_event.message?.attachments && webhook_event.message.attachments[0].type === 'audio') {
+                const audioUrl = webhook_event.message.attachments[0].payload.url;
+                const transcribedText = await convertAudioToText(audioUrl);
+
+                if (transcribedText) {
+                    const aiResponse = await generateAIResponse(senderPsid, transcribedText, customerName);
+                    await sendFBMessage(senderPsid, aiResponse.text);
+                    if (aiResponse.imageUrl) await sendFBImageUrl(senderPsid, aiResponse.imageUrl);
+                } else {
+                    await sendFBMessage(senderPsid, "ခွင့်လွှတ်ပါရှင်၊ အသံဖိုင်ကို စာဖြင့် ပြန်လည် ပေးပို့ပေးပါရန် မေတ္တာရပ်ခံအပ်ပါသည်။");
+                }
+            }
+            else if (webhook_event.message?.text) {
                 const userMessage = webhook_event.message.text;
-                const aiReply = await generateAIResponse(senderPsid, userMessage, customerName);
-                await sendFBMessage(senderPsid, aiReply);
+                const aiResponse = await generateAIResponse(senderPsid, userMessage, customerName);
+                
+                await sendFBMessage(senderPsid, aiResponse.text);
+                if (aiResponse.imageUrl) await sendFBImageUrl(senderPsid, aiResponse.imageUrl);
             }
         }
     } else {
@@ -594,6 +684,16 @@ async function sendFBMessage(senderPsid, responseText) {
     } catch (error) {}
 }
 
+async function sendFBImageUrl(senderPsid, imageUrl) {
+    if (!PAGE_ACCESS_TOKEN || !imageUrl) return;
+    try {
+        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: senderPsid },
+            message: { attachment: { type: 'image', payload: { url: imageUrl, is_reusable: true } } }
+        });
+    } catch (error) {}
+}
+
 async function sendFBPhotoBuffer(senderPsid, buffer, captionText) {
     if (!PAGE_ACCESS_TOKEN) return;
     try {
@@ -612,6 +712,5 @@ async function sendFBPhotoBuffer(senderPsid, buffer, captionText) {
 }
 
 app.get('/', (req, res) => res.send('Server Active!'));
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));

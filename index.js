@@ -27,7 +27,7 @@ setupMyanmarFont();
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'a-p-t-123';
 const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;

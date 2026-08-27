@@ -27,7 +27,7 @@ setupMyanmarFont();
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'a-p-t-123';
 const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -125,6 +125,9 @@ async function getShopConfigFromSheet() {
     }
 }
 
+// ----------------------------------------------------
+// ၁။ Google Sheets ထဲမှ Products (A2:E200) စာရင်း ဖတ်ယူခြင်း
+// ----------------------------------------------------
 async function getProductsFromSheet() {
     try {
         const auth = getGoogleSheetsAuth();
@@ -132,7 +135,7 @@ async function getProductsFromSheet() {
         const sheets = google.sheets({ version: 'v4', auth });
         const response = await sheets.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
-            range: 'Products!A2:D200',
+            range: 'Products!A2:E200',
         });
         const rows = response.data.values;
         if (!rows || rows.length === 0) return 'လက်ရှိတွင် ကုန်ပစ္စည်း စာရင်းမရှိသေးပါ။';
@@ -142,8 +145,9 @@ async function getProductsFromSheet() {
             const name = row[0] || 'N/A';
             const price = row[1] || 'N/A';
             const stock = row[2] || '0';
-            const imageUrl = row[3] || 'No Image';
-            productListText += `- ပစ္စည်း: ${name} | ဈေး: ${price} ကျပ် | လက်ကျန်: ${stock} | ပုံလင့်ခ်: ${imageUrl}\n`;
+            const colorSizeDetails = row[3] || 'N/A';
+            const imageUrl = row[4] || 'No Image';
+            productListText += `- ပစ္စည်း: ${name} | ဈေး: ${price} ကျပ် | လက်ကျန်: ${stock} | အသေးစိတ်/အရောင်/ဆိုဒ်: ${colorSizeDetails} | ပုံလင့်ခ်: ${imageUrl}\n`;
         });
         return productListText;
     } catch (error) {
@@ -481,7 +485,7 @@ app.post('/telegram-webhook', async (req, res) => {
                             ...pendingPayments[senderPsid],
                             voucherBuffer: voucherBuffer
                         };
-                        await sendFBMessage(senderPsid, `မင်္ဂလာပါ ${customerName} ရှင့်၊ လူကြီးမင်း၏ အော်ဒါအား ထုတ်ပိုးပြင်ဆင်ပြီးပါပြီ။ ကားဂိတ်သို့ ပို့ဆောင်ပြီးပါက ဂိတ်ဘောင်ချာနှင့်အတူ တစ်ပေါင်းတည်း ပို့ပေးပါမည်။ 📦✨`);
+                        await sendFBMessage(senderPsid, `မင်္ဂလာပါ ${customerName} ရှင့်၊ လူကြီးမင်း၏ အော်ဒါအား ထုတ်ပိုးပြင်ဆင်ပြီးပါပြီ။ ကားဂိတ်သို့ ပို့ဆောင်ပြီးပါက ဂိတ်ဘောင်ချာနှင့်အတူ တစ်ပေါင်းတည်း ပို့ပေးပါမည်။ 📦✨`);
                     }
                 }
             }
@@ -519,6 +523,9 @@ app.post('/telegram-webhook', async (req, res) => {
     } catch (error) {}
 });
 
+// ----------------------------------------------------
+// ၂။ Gemini AI Session & System Instruction မွမ်းမံခြင်း
+// ----------------------------------------------------
 async function getChatSession(senderPsid, customerName) {
     if (!userSessions[senderPsid]) {
         const productData = await getProductsFromSheet();
@@ -529,7 +536,7 @@ async function getChatSession(senderPsid, customerName) {
 သင့်နာမည်သည် အရောင်းဝန်ထမ်း AI ဖြစ်သည်။
 Customer နာမည်: "${customerName}"
 
-[ပစ္စည်းစာရင်း၊ လက်ကျန် နှင့် ပုံလင့်ခ်]
+[ပစ္စည်းစာရင်း၊ လက်ကျန်၊ အရောင်/ဒီဇိုင်း အသေးစိတ် နှင့် ပုံလင့်ခ်]
 ${productData}
 
 [COD ရရှိနိုင်သော မြို့နယ်များနှင့် ပို့ခ]
@@ -539,13 +546,21 @@ ${codCityData}
 ${paymentData}
 
 **အရောင်းဆိုင် စည်းမျဉ်းများ:**
-၁။ Customer မေးသည့် ပစ္စည်းအကြောင်း၊ ဈေးနှုန်းနှင့် လက်ကျန်ကိုပဲ အရင်ဖြေပါ။
-၂။ Customer က ပစ္စည်းပုံ ပြခိုင်းပါက သို့မဟုတ် ပစ္စည်းအကြောင်း မေးမြန်းပါက အဆိုပါ ပစ္စည်း၏ [ပုံလင့်ခ်] ကို တိကျစွာ ရယူပြီး စာကြောင်း၏ နောက်ဆုံးတွင် အောက်ပါ Tag ဖြင့် ထည့်ပေးပါ (ပုံလင့်ခ် မရှိပါက သို့မဟုတ် "No Image" ဖြစ်ပါက Tag ထည့်ရန် မလိုပါ) -
-[IMAGE: (ပုံလင့်ခ် URL)]
+၁။ Customer မေးသည့် ပစ္စည်းအကြောင်း၊ အရောင်/ဒီဇိုင်းအလိုက် လက်ကျန် (Stock) နှင့် ဈေးနှုန်းကို တိကျစွာ ဖြေပေးပါ။ Stock 0 ဖြစ်နေပါက ကုန်သွားပြီဖြစ်ကြောင်း ပြောပါ။
 
-၃။ Customer က "မှာယူမည်/ယူမယ်/ဝယ်မယ်" ဟု တိကျစွာပြောမှသာ မြို့နယ်၊ ဖုန်းနံပါတ် နှင့် လိပ်စာကို တောင်းပါ။
+၂။ Customer က ပစ္စည်းပုံ ပြခိုင်းပါက သို့မဟုတ် အရောင်/ဒီဇိုင်း ပုံကို မေးမြန်းပါက:
+   - စာရင်းထဲရှိ အဆိုပါ ပစ္စည်း/အရောင်/ဒီဇိုင်း ၏ တိကျသော [ပုံလင့်ခ်] ကို ရယူပြီး စာကြောင်း၏ နောက်ဆုံးတွင် အောက်ပါ Tag ဖြင့်ပဲ ထည့်ပေးပါ (ပုံလင့်ခ် မရှိပါက သို့မဟုတ် "No Image" ဖြစ်ပါက Tag ထည့်ရန် မလိုပါ) -
+   [IMAGE: (ပုံလင့်ခ် URL)]
 
-၄။ **COD စစ်ဆေးရန်နှင့် ငွေတောင်းရန် စည်းမျဉ်း:**
+၃။ Customer က ပစ္စည်းအမည် (ဥပမာ- တီရှပ်၊ ဂါဝန်) မပါဘဲ "အနီရောင် ရှိလား"၊ "ဒီဇိုင်း A ရှိလား" စသဖြင့် အရောင်/ဒီဇိုင်း တစ်ခုတည်းကိုပဲ မေးမြန်းလာပါက:
+   - တိုက်ရိုက် ပုံမပြမီ အဆိုပါ အရောင်/ဒီဇိုင်းဖြင့် ရရှိနိုင်သော ပစ္စည်းအမျိုးအစားများကို ဖော်ပြပေးပြီး "ဘယ်ပစ္စည်း အမျိုးအစားကို ကြည့်ချင်ပါသလဲ" ဟု ယဉ်ကျေးစွာ ပြန်လည် မေးမြန်းပါ။
+
+၄။ Customer ဘက်မှ ဓာတ်ပုံ (Image) ပို့လာပါက:
+   - ပုံထဲပါရှိသော ပစ္စည်းအမျိုးအစား၊ ဒီဇိုင်း သို့မဟုတ် အရောင်ကို လေ့လာဆန်းစစ်ပြီး Google Sheet ထဲရှိ စာရင်းများနှင့် တိုက်စစ်ကာ သင့်လျော်သော လက်ကျန်၊ ဈေးနှုန်းနှင့် အချက်အလက်များကို ပြန်လည် ဖြေကြားပေးပါ။
+
+၅။ Customer က "မှာယူမည်/ယူမယ်/ဝယ်မယ်" ဟု တိကျစွာပြောမှသာ မြို့နယ်၊ ဖုန်းနံပါတ် နှင့် လိပ်စာကို တောင်းပါ။
+
+၆။ **COD စစ်ဆေးရန်နှင့် ငွေတောင်းရန် စည်းမျဉ်း:**
    - **[COD ရရှိနိုင်သော မြို့နယ်များ] ထဲတွင် ပါဝင်ပါက:**
      -> COD ရကြောင်း ပြောပါ။ ပစ္စည်းကျသင့်ငွေ + Deli ပို့ခ ပေါင်းပြီး စုစုပေါင်း ကျသင့်ငွေကို တွက်ချက်ပြောပြပေးပါ။ ငွေကြိုလွှဲရန် မလိုဘဲ အော်ဒါအတည်ပြုပေးပါ။
    - **[COD မရသော မြို့နယ်များ] ဖြစ်ပါက (မဖြစ်မနေ လုပ်ဆောင်ရမည့် စည်းမျဉ်း):**
@@ -553,12 +568,12 @@ ${paymentData}
      -> **"မည်သည့် ကားဂိတ်သို့ တင်ပေးရမည်နည်း"** ဟု မဖြစ်မနေ မေးရပါမည်။
      -> ဝယ်သူက အဆင်ပြေသည့် ကားဂိတ်အမည် ပြောပြလာမှသာ [ငွေလွှဲရမည့် အကောင့်များ] စာရင်းကို ပြသပေးပြီး **ငွေလွှဲပြီးပါက ငွေလွှဲပြေစာ Screenshot (SS) ပို့ပေးရန် တောင်းဆိုပါ။**
 
-၅။ အော်ဒါအချက်အလက်များ အပြည့်အစုံ ရရှိပါက စာကြောင်း၏ နောက်ဆုံးတွင် အောက်ပါ Tag တိကျစွာ ထည့်ပေးပါ:
+၇။ အော်ဒါအချက်အလက်များ အပြည့်အစုံ ရရှိပါက စာကြောင်း၏ နောက်ဆုံးတွင် အောက်ပါ Tag တိကျစွာ ထည့်ပေးပါ:
 [ORDER_INFO]
 အမည်: ${customerName}
 ဖုန်း: (ဖုန်းနံပါတ်)
 လိပ်စာ: (မြို့နယ် နှင့် ကားဂိတ်အမည်)
-မှာယူသည့်ပစ္စည်း: (ပစ္စည်းအမည်)
+မှာယူသည့်ပစ္စည်း: (တိကျသော ပစ္စည်းအမည် ဥပမာ- တီရှပ် (အနီရောင်))
 အရေအတွက်: (အရေအတွက် ဂဏန်းတစ်ခုတည်း)
 ပစ္စည်းဈေးနှုန်း: (တစ်ခု ဈေးနှုန်း ဂဏန်းတစ်ခုတည်း)
 ပို့ခ: (ပို့ဆောင်ခ ဂဏန်းတစ်ခုတည်း၊ COD မရပါက 0 ဟုထည့်ရန်)
@@ -584,10 +599,13 @@ ${paymentData}
     return userSessions[senderPsid].chat;
 }
 
-async function generateAIResponse(senderPsid, userMessage, customerName) {
+// ----------------------------------------------------
+// ၃။ AI Response Generation (Text & Multimodal Vision 지원)
+// ----------------------------------------------------
+async function generateAIResponse(senderPsid, userMessagePayload, customerName) {
     try {
         const chatSession = await getChatSession(senderPsid, customerName);
-        const result = await chatSession.sendMessage(userMessage);
+        const result = await chatSession.sendMessage(userMessagePayload);
         let aiReply = result.response.text();
 
         let extractedImageUrl = null;
@@ -617,10 +635,14 @@ async function generateAIResponse(senderPsid, userMessage, customerName) {
 
         return { text: aiReply, imageUrl: extractedImageUrl };
     } catch (error) {
+        console.error("AI Gen Error:", error.message);
         return { text: 'မင်္ဂလာပါရှင်၊ ခဏစောင့်ဆိုင်းပေးပါရန် မေတ္တာရပ်ခံအပ်ပါသည်။', imageUrl: null };
     }
 }
 
+// ----------------------------------------------------
+// ၄။ Facebook Webhook Message / Attachment Handling
+// ----------------------------------------------------
 app.post('/facebook-webhook', async (req, res) => {
     const body = req.body;
     if (body.object === 'page') {
@@ -634,14 +656,40 @@ app.post('/facebook-webhook', async (req, res) => {
 
             const customerName = await getFacebookUserName(senderPsid);
 
+            // ဓာတ်ပုံ ဝင်လာလျှင်
             if (webhook_event.message?.attachments && webhook_event.message.attachments[0].type === 'image') {
                 const photoUrl = webhook_event.message.attachments[0].payload.url;
-                const pendingData = pendingPayments[senderPsid];
-                const orderDetails = pendingData ? pendingData.text : "မှာယူမည့် အသေးစိတ် စာရင်းမရှိသေးပါ။";
                 
-                await sendPaymentCheckToDataGroup(customerName, senderPsid, photoUrl, orderDetails);
-                await sendFBMessage(senderPsid, `မင်္ဂလာပါ ${customerName} ရှင့်၊ ပေးပို့လာသော ငွေလွှဲပြေစာအား လက်ခံရရှိပါပြီရှင်။ Admin မှ စစ်ဆေးပြီးပါက Packing အထုပ်ထုပ်ရန် အကြောင်းကြားပေးပါမည်။`);
+                // ပစ္စည်းမှာထားပြီး ငွေလွှဲပြေစာ စောင့်ဆိုင်းနေသည့် အခြေအနေဖြစ်ပါက Telegram တင်မည်
+                if (pendingPayments[senderPsid]) {
+                    const pendingData = pendingPayments[senderPsid];
+                    const orderDetails = pendingData ? pendingData.text : "မှာယူမည့် အသေးစိတ် စာရင်းမရှိသေးပါ။";
+                    
+                    await sendPaymentCheckToDataGroup(customerName, senderPsid, photoUrl, orderDetails);
+                    await sendFBMessage(senderPsid, `မင်္ဂလာပါ ${customerName} ရှင့်၊ ပေးပို့လာသော ငွေလွှဲပြေစာအား လက်ခံရရှိပါပြီရှင်။ Admin မှ စစ်ဆေးပြီးပါက Packing အထုပ်ထုပ်ရန် အကြောင်းကြားပေးပါမည်။`);
+                } 
+                // မဟုတ်ပါက Gemini Vision သို့ ပို့၍ ပစ္စည်းပုံ/ဒီဇိုင်းပုံ စစ်ဆေးခိုင်းမည်
+                else {
+                    try {
+                        const imgRes = await axios.get(photoUrl, { responseType: 'arraybuffer' });
+                        const base64Data = Buffer.from(imgRes.data).toString('base64');
+                        const imagePart = {
+                            inlineData: {
+                                data: base64Data,
+                                mimeType: "image/jpeg"
+                            }
+                        };
+                        const textPart = { text: webhook_event.message.text || "ဒီပုံထဲက ပစ္စည်း/ဒီဇိုင်း ရှိလား စစ်ဆေးပေးပါ။" };
+
+                        const aiResponse = await generateAIResponse(senderPsid, [textPart, imagePart], customerName);
+                        await sendFBMessage(senderPsid, aiResponse.text);
+                        if (aiResponse.imageUrl) await sendFBImageUrl(senderPsid, aiResponse.imageUrl);
+                    } catch (err) {
+                        await sendFBMessage(senderPsid, "ပုံကို ဖတ်ရှု၍ မရနိုင်ပါ။ စာဖြင့် အကြောင်းအရာ မေးမြန်းပေးပါရန် မေတ္တာရပ်ခံအပ်ပါသည်။");
+                    }
+                }
             } 
+            // အသံဖိုင် ဝင်လာလျှင်
             else if (webhook_event.message?.attachments && webhook_event.message.attachments[0].type === 'audio') {
                 const audioUrl = webhook_event.message.attachments[0].payload.url;
                 const transcribedText = await convertAudioToText(audioUrl);
@@ -654,6 +702,7 @@ app.post('/facebook-webhook', async (req, res) => {
                     await sendFBMessage(senderPsid, "ခွင့်လွှတ်ပါရှင်၊ အသံဖိုင်ကို စာဖြင့် ပြန်လည် ပေးပို့ပေးပါရန် မေတ္တာရပ်ခံအပ်ပါသည်။");
                 }
             }
+            // စာသား ဝင်လာလျှင်
             else if (webhook_event.message?.text) {
                 const userMessage = webhook_event.message.text;
                 const aiResponse = await generateAIResponse(senderPsid, userMessage, customerName);

@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const FormData = require('form-data');
 const { google } = require('googleapis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const OpenAI = require('openai');
@@ -27,7 +28,7 @@ setupMyanmarFont();
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'a-p-t-123';
 const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -39,6 +40,60 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY || '' });
 
 const userSessions = {};
 const pendingPayments = {};
+
+// ----------------------------------------------------
+// Outbound Facebook API Helpers
+// ----------------------------------------------------
+async function sendFBMessage(senderPsid, text) {
+    if (!PAGE_ACCESS_TOKEN || !text) return;
+    try {
+        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: senderPsid },
+            message: { text: text }
+        });
+    } catch (error) {
+        console.error('FB Send Message Error:', error.response?.data || error.message);
+    }
+}
+
+async function sendFBImageUrl(senderPsid, imageUrl) {
+    if (!PAGE_ACCESS_TOKEN || !imageUrl) return;
+    try {
+        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: senderPsid },
+            message: {
+                attachment: {
+                    type: 'image',
+                    payload: { url: imageUrl, is_reusable: true }
+                }
+            }
+        });
+    } catch (error) {
+        console.error('FB Send Image URL Error:', error.response?.data || error.message);
+    }
+}
+
+async function sendFBPhotoBuffer(senderPsid, buffer, textCaption = '') {
+    if (!PAGE_ACCESS_TOKEN || !buffer) return;
+    try {
+        const formData = new FormData();
+        formData.append('recipient', JSON.stringify({ id: senderPsid }));
+        formData.append('message', JSON.stringify({
+            attachment: { type: 'image', payload: {} }
+        }));
+        formData.append('filedata', buffer, { filename: 'voucher.png', contentType: 'image/png' });
+
+        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, formData, {
+            headers: formData.getHeaders()
+        });
+
+        if (textCaption) {
+            await sendFBMessage(senderPsid, textCaption);
+        }
+    } catch (error) {
+        console.error('FB Send Photo Buffer Error:', error.response?.data || error.message);
+    }
+}
 
 async function getFacebookUserName(senderPsid) {
     if (!PAGE_ACCESS_TOKEN) return "Customer";
@@ -81,6 +136,9 @@ async function convertAudioToText(audioUrl) {
     }
 }
 
+// ----------------------------------------------------
+// Google Sheets ဖတ်ယူခြင်း လုပ်ဆောင်ချက်များ
+// ----------------------------------------------------
 async function getPaymentAccountsFromSheet() {
     try {
         const auth = getGoogleSheetsAuth();
@@ -100,7 +158,7 @@ async function getPaymentAccountsFromSheet() {
                 paymentListText += `- ${row[0]}: ${row[1]}\n`;
             }
         });
-        return paymentListText;
+        return paymentListText || 'Kpay / Wavepay ဖြင့် ငွေလွှဲပေးချေနိုင်ပါသည်။';
     } catch (error) {
         return 'Kpay / Wavepay ဖြင့် ငွေလွှဲပေးချေနိုင်ပါသည်။';
     }
@@ -125,9 +183,6 @@ async function getShopConfigFromSheet() {
     }
 }
 
-// ----------------------------------------------------
-// ၁။ Google Sheets ထဲမှ Products (A2:E200) စာရင်း ဖတ်ယူခြင်း
-// ----------------------------------------------------
 async function getProductsFromSheet() {
     try {
         const auth = getGoogleSheetsAuth();
@@ -240,6 +295,9 @@ async function updateStockInSheet(itemOrderedName, quantityOrdered = 1) {
     }
 }
 
+// ----------------------------------------------------
+// Voucher Generator Function
+// ----------------------------------------------------
 async function createVoucherBuffer(customerName, orderDetails) {
     const config = await getShopConfigFromSheet();
     const canvas = createCanvas(650, 850);
@@ -339,7 +397,7 @@ async function createVoucherBuffer(customerName, orderDetails) {
 
     ctx.fillStyle = '#FFFFFF';
     ctx.font = 'bold 18px "Pyidaungsu"';
-    ctx.fillText('အခြေအနေ: အော်ဒါထုတ်ပိုးပြင်ဆင်ပြီးပါပြီ ✅', 160, startY + 152);
+    ctx.fillText('အခြေအနေ: အော်ဒါထုတ်ပိုးပြင်ဆင်ပြီးပါပြီ ', 160, startY + 152);
 
     ctx.fillStyle = '#64748B';
     ctx.font = '14px "Pyidaungsu"';
@@ -348,6 +406,9 @@ async function createVoucherBuffer(customerName, orderDetails) {
     return canvas.toBuffer('image/png');
 }
 
+// ----------------------------------------------------
+// Telegram Notifications
+// ----------------------------------------------------
 async function sendTelegramOrderNotification(orderText, senderPsid) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_PACKING_GROUP_ID) return;
     const messageText = `📦 *[ ထုတ်ပိုးရန် အော်ဒါ - Packing List ]*\n━━━━━━━━━━━━━━━━━━\n🆔 *PSID:* \`${senderPsid}\`\n\n${orderText}\n━━━━━━━━━━━━━━━━━━\n🔴 *အခြေအနေ:* Packing မထုပ်ရသေးပါ`;
@@ -382,6 +443,9 @@ async function sendPaymentCheckToDataGroup(fbName, senderPsid, photoUrl, orderDe
     } catch (error) {}
 }
 
+// ----------------------------------------------------
+// Telegram Webhook
+// ----------------------------------------------------
 app.post('/telegram-webhook', async (req, res) => {
     res.sendStatus(200);
     try {
@@ -524,7 +588,7 @@ app.post('/telegram-webhook', async (req, res) => {
 });
 
 // ----------------------------------------------------
-// ၂။ Gemini AI Session & System Instruction မွမ်းမံခြင်း
+// Gemini AI Setup & System Instructions
 // ----------------------------------------------------
 async function getChatSession(senderPsid, customerName) {
     if (!userSessions[senderPsid]) {
@@ -566,7 +630,7 @@ ${paymentData}
    - **[COD မရသော မြို့နယ်များ] ဖြစ်ပါက (မဖြစ်မနေ လုပ်ဆောင်ရမည့် စည်းမျဉ်း):**
      -> COD မရပါဟု တိကျစွာပြောပါ။ 
      -> **"မည်သည့် ကားဂိတ်သို့ တင်ပေးရမည်နည်း"** ဟု မဖြစ်မနေ မေးရပါမည်။
-     -> ဝယ်သူက အဆင်ပြေသည့် ကားဂိတ်အမည် ပြောပြလာမှသာ [ငွေလွှဲရမည့် အကောင့်များ] စာရင်းကို ပြသပေးပြီး **ငွေလွှဲပြီးပါက ငွေလွှဲပြေစာ Screenshot (SS) ပို့ပေးရန် တောင်းဆိုပါ။**
+     -> ဝယ်သူက အဆင်ပြေသည့် ကားဂိတ်အမည် ပြောပြလာမှသာ [ငွေလွှဲရမည့် အကောင့်များ (Settings)] ထဲရှိ ငွေလွှဲရမည့် အကောင့်စာရင်းများကို ဖော်ပြပြသပေးပြီး **ငွေလွှဲပြီးပါက ငွေလွှဲပြေစာ Screenshot (SS) ပို့ပေးရန် တောင်းဆိုပါ။**
 
 ၇။ အော်ဒါအချက်အလက်များ အပြည့်အစုံ ရရှိပါက စာကြောင်း၏ နောက်ဆုံးတွင် အောက်ပါ Tag တိကျစွာ ထည့်ပေးပါ:
 [ORDER_INFO]
@@ -600,7 +664,7 @@ ${paymentData}
 }
 
 // ----------------------------------------------------
-// ၃။ AI Response Generation (Text & Multimodal Vision 지원)
+// AI Response Generation
 // ----------------------------------------------------
 async function generateAIResponse(senderPsid, userMessagePayload, customerName) {
     try {
@@ -641,7 +705,7 @@ async function generateAIResponse(senderPsid, userMessagePayload, customerName) 
 }
 
 // ----------------------------------------------------
-// ၄။ Facebook Webhook Message / Attachment Handling
+// Facebook Webhook Processing
 // ----------------------------------------------------
 app.post('/facebook-webhook', async (req, res) => {
     const body = req.body;
@@ -660,7 +724,6 @@ app.post('/facebook-webhook', async (req, res) => {
             if (webhook_event.message?.attachments && webhook_event.message.attachments[0].type === 'image') {
                 const photoUrl = webhook_event.message.attachments[0].payload.url;
                 
-                // ပစ္စည်းမှာထားပြီး ငွေလွှဲပြေစာ စောင့်ဆိုင်းနေသည့် အခြေအနေဖြစ်ပါက Telegram တင်မည်
                 if (pendingPayments[senderPsid]) {
                     const pendingData = pendingPayments[senderPsid];
                     const orderDetails = pendingData ? pendingData.text : "မှာယူမည့် အသေးစိတ် စာရင်းမရှိသေးပါ။";
@@ -668,7 +731,6 @@ app.post('/facebook-webhook', async (req, res) => {
                     await sendPaymentCheckToDataGroup(customerName, senderPsid, photoUrl, orderDetails);
                     await sendFBMessage(senderPsid, `မင်္ဂလာပါ ${customerName} ရှင့်၊ ပေးပို့လာသော ငွေလွှဲပြေစာအား လက်ခံရရှိပါပြီရှင်။ Admin မှ စစ်ဆေးပြီးပါက Packing အထုပ်ထုပ်ရန် အကြောင်းကြားပေးပါမည်။`);
                 } 
-                // မဟုတ်ပါက Gemini Vision သို့ ပို့၍ ပစ္စည်းပုံ/ဒီဇိုင်းပုံ စစ်ဆေးခိုင်းမည်
                 else {
                     try {
                         const imgRes = await axios.get(photoUrl, { responseType: 'arraybuffer' });
@@ -724,42 +786,10 @@ app.get('/facebook-webhook', (req, res) => {
     }
 });
 
-async function sendFBMessage(senderPsid, responseText) {
-    if (!PAGE_ACCESS_TOKEN) return;
-    try {
-        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-            recipient: { id: senderPsid }, message: { text: responseText }
-        });
-    } catch (error) {}
-}
-
-async function sendFBImageUrl(senderPsid, imageUrl) {
-    if (!PAGE_ACCESS_TOKEN || !imageUrl) return;
-    try {
-        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-            recipient: { id: senderPsid },
-            message: { attachment: { type: 'image', payload: { url: imageUrl, is_reusable: true } } }
-        });
-    } catch (error) {}
-}
-
-async function sendFBPhotoBuffer(senderPsid, buffer, captionText) {
-    if (!PAGE_ACCESS_TOKEN) return;
-    try {
-        const FormData = require('form-data');
-        const form = new FormData();
-        form.append('recipient', JSON.stringify({ id: senderPsid }));
-        form.append('message', JSON.stringify({ attachment: { type: 'image', payload: {} } }));
-        form.append('filedata', buffer, { filename: 'image.png', contentType: 'image/png' });
-
-        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, form, {
-            headers: form.getHeaders()
-        });
-
-        if (captionText) await sendFBMessage(senderPsid, captionText);
-    } catch (error) {}
-}
-
-app.get('/', (req, res) => res.send('Server Active!'));
+// ----------------------------------------------------
+// Server Listener Setup
+// ----------------------------------------------------
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Server is running smoothly on port ${PORT}`);
+});
